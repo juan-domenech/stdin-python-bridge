@@ -1,7 +1,7 @@
 """
 stdin Python Bridge
 
-Attempt to send waveforms coming from stdin into Twinlan UHD bridge
+TCP/IP server to send waveforms coming from stdin into Twinlan UHD bridge
 SCPI protocol to be read from ngscopeclient https://www.ngscopeclient.org/
 """
 
@@ -16,12 +16,6 @@ import numpy as np
 from scipy.signal import hilbert
 
 
-# logger = logging.getLogger(__name__)
-# FORMAT = '%(levelname)s:\t%(threadName)s %(funcName)s %(message)s'
-# logging.basicConfig(level=logging.INFO, format=FORMAT)
-# # logging.basicConfig(format=FORMAT)
-
-
 def signal_handler (sig, frame) :
     """ CTRL+C handler """
     logger.info("Exiting...")
@@ -33,9 +27,6 @@ def signal_handler (sig, frame) :
 def get_args():
     """ Get CLI arguments """
     parser = argparse.ArgumentParser(description="stdin_python_bridge.py")
-    parser.add_argument(
-        "--loglevel", default="info", required=False, help="Log level selector (default Info)"
-    )
     parser.add_argument(
         "--sampling", default=44100, required=False, help="Sampling frequency (default 44100 samples per second )"
     )
@@ -59,6 +50,9 @@ def get_args():
     )
     parser.add_argument(
         "--force", action="store_true", required=False, help="Don't wait for the START command"
+    )
+    parser.add_argument(
+        "--loglevel", default="info", required=False, help="Log level selector (default Info)"
     )
     return parser.parse_args()
 
@@ -122,7 +116,7 @@ def scpi_responses (data) :
         In some cases we care (like RATES or DEPTHS)
         but in other cases we ignore (like RXGAIN, RXFREQ, etc.)
         because they have no effect in this emulation.
-        """ 
+        """
         match command:
             case "ping":
                 response = "pong\n"
@@ -214,7 +208,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                     if ENCODE == 'complex64' :
 
                         logger.info("Sending stdin complex64")
-                        send_wave_header(self, DEPTH, TONE_SAMPLING) 
+                        send_wave_header(self, DEPTH, TONE_SAMPLING)
 
                         block_position = 0
                         while block_position != DEPTH :
@@ -238,11 +232,11 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
 
                     elif ENCODE == 'cu8' :
 
-                        # rtl_sdr .cu8 Tests 
+                        # rtl_sdr .cu8 Tests
                         # https://github.com/merbanan/rtl_433_tests/tree/master/tests/directv
 
                         logger.info("Sending stdin cu8")
-                        send_wave_header(self, DEPTH, TONE_SAMPLING) 
+                        send_wave_header(self, DEPTH, TONE_SAMPLING)
 
                         block_position = 0
                         while block_position != DEPTH :
@@ -253,7 +247,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                                 """
                                 .cu8 format seems to be 8 bits (256 values) with 0 at the center (value 127),
                                 everything above is positive and everything below 127 is negative.
-                                Dividing by 100 to get values to the typical -2/+2 Volts range.
+                                Dividing by 100 to get values to the typical -1/+1 Volts range.
                                 """
                                 real8 = np.array((data[0] -127) /100, dtype='float32')
                                 imag8 = np.array((data[1] -127) /100, dtype='float32')
@@ -283,7 +277,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                         logger.debug("PLAY existing pause")
                         IN_PAUSE = False
                         # Rending after pause to give a change to pick up new settings (in case there are any)
-                        signal_complex64 = render_tone(TONE_SAMPLING, TONE_FREQ, TONE_DURATION, TONE_AMP) 
+                        signal_complex64 = render_tone(TONE_SAMPLING, TONE_FREQ, TONE_DURATION, TONE_AMP)
                         signal_length = len(signal_complex64)
                         logger.debug("len(signal_complex64) samples: %i", signal_length)
                         signal_position = 0
@@ -350,7 +344,8 @@ def render_tone (fs, f, t, tone_amp) :
     # fs = TONE_SAMPLING
     # f  = TONE_FREQ
     # t  = TONE_DURATION
-    samples = np.arange(t * fs) / fs
+    # TODO: increase TONE_DURATION to make sure the periods of the signal end at zero to reduce signal noise
+    samples = np.arange(t * fs) / fs 
     signal = np.sin(2 * np.pi * f * samples)
 
     # Amplify
@@ -362,7 +357,13 @@ def render_tone (fs, f, t, tone_amp) :
     logger.debug("len(signal_iq)) samples: %i", len(signal_iq))
 
     # From complex to complex 64 bits (32 bits real + 32 bits imaginary)
-    return signal_iq.astype(np.complex64)
+    signal_iq_complex64 = signal_iq.astype(np.complex64)
+
+    # BUG?: The first real is 3.8414194e-27-1j instead of 0 and that is an outlier in the sequence 
+    # TODO: Forcing the first real to be 0.1 at the begining of the period
+    signal_iq_complex64[0] = np.array(0.1 + -1j*1, dtype='complex64')
+
+    return signal_iq_complex64
 
 
 def hex_print (bytes_to_convert) :
@@ -386,12 +387,14 @@ def hex_print (bytes_to_convert) :
             result = result + '.'
     result = result + ' | '
 
-    return result 
+    return result
 
 
 def hex_print_ascii (bytes_to_convert, source) :
-    """ Build string printing the complex as Hex,
-    as numbers and ploting real and imaginary as ASCII """
+    """
+    Build string printing the complex as Hex,
+    as numbers and ploting real and imaginary as ASCII
+    """
 
     # TODO
     if source.real > 32767 or source.real < -32768 :
@@ -464,10 +467,8 @@ if __name__ == "__main__" :
     FORMAT = '%(levelname)s:\t%(threadName)s %(funcName)s %(message)s'
     if args.loglevel == 'debug' :
         logging.basicConfig(level=logging.DEBUG, format=FORMAT)
-        # logger.info("We are in Debug logging")
     else :
         logging.basicConfig(level=logging.INFO, format=FORMAT)
-        # logger.info("We are in Info logging")
 
     logger.info("Starting")
 
@@ -475,17 +476,27 @@ if __name__ == "__main__" :
         logger.error("Fatal: --stdin and --tone at the same time are not allowed.")
         sys.exit(1)
 
+    if args.encode == 'complex64' and args.stdin :
+        ENCODE = 'complex64'
+        logger.info("Decoding stdin in format complex64 (I real float32 + Q imaginary float32)")
+    elif args.encode == 'cu8' and args.stdin :
+        ENCODE = 'cu8'
+        logger.info("Decoding stdin in format cu8 (I one byte + Q one byte)")
+    elif args.stdin :
+        ENCODE = 'complex64'
+        logger.info("No encode for stdin specified. Decoding stdin in format %s", ENCODE)
+
     if args.tone :
         TONE_FREQ = int(args.tonefreq)
         TONE_SAMPLING = int(args.sampling)
         # TONE_AMP =    32767 # Aplitude [-32768, 32767]
         TONE_DURATION = float(args.toneduration) # Duration of wave in seconds (it will repeat afterwards)
         TONE_AMP =    1
-        logger.info("Generating tone of %i Hz at %i sampling rate during %f seconds", TONE_FREQ, TONE_SAMPLING, TONE_DURATION)
+        logger.info("Generating tone of %i Hz at %i sampling rate with a render length of %f seconds", TONE_FREQ, TONE_SAMPLING, TONE_DURATION)
     elif args.stdin :
         TONE_AMP =    2
         TONE_SAMPLING = int(args.sampling)
-        logger.info("Reading from stdin sampling at %i sampling rate and %i TONE_AMP", TONE_SAMPLING, TONE_AMP)
+        logger.info("Reading from stdin sampling at %i sampling rate and %i TONE_AMP in %s mode", TONE_SAMPLING, TONE_AMP, ENCODE)
     else :
         logger.error("Missing mode: --stdin or --tone")
         sys.exit(1)
@@ -495,20 +506,11 @@ if __name__ == "__main__" :
     else :
         PLAY = False
 
-    if args.encode == 'complex64' :
-        ENCODE = 'complex64'
-        logger.info("Decoding stdin in format complex64 (I real float32 + Q imaginary float32)")
-    elif args.encode == 'cu8' :
-        ENCODE = 'cu8'
-        logger.info("Decoding stdin in format cu8 (I one byte + Q one byte)")
-    else :
-        ENCODE = 'complex64'
-        logger.info("No encode for stdin specified. Decoding stdin in format %s", ENCODE)
-
     # TONE_AMP =    1 # Aplitude [-32768, 32767]
 
-    DEPTH = 100000 # ngscopeclient seems to like 100K waves
+    DEPTH = 100000 # ngscopeclient seems to like 100K samples long waves
 
+    # Zero crossing detector signaling
     ZERO_UP = False
     ZERO_DOWN = False
 
