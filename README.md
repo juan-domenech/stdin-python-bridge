@@ -20,6 +20,8 @@ And then click on: Play ▶️
 
 (Substitute `localhost` with your host name or IP if `stdin_python_bridge.py` is running in some other computer)
 
+![stdin-python-bridge-sdr-uhd-ngscopeclient-1.png](/images/stdin-python-bridge-sdr-uhd-ngscopeclient-1.png)
+
 ## stdin mode
 
 In this mode we can cat files or streams to **stdin-python-bridge** to be read by **ngscopeclient**.
