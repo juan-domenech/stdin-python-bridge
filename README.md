@@ -13,7 +13,9 @@ First start the bridge by:
 python3 stdin_python_bridge.py --tone
 ```
 And then select SDR instrument in ngscopeclient:
+
 Add -> SDR -> Connect... -> Transport: twinlan -> `localhost:5025:5026`
+
 And then click on: Play ▶️
 
 (Substitute `localhost` with your host name or IP if `stdin_python_bridge.py` is running in some other computer)
