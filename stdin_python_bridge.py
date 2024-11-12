@@ -34,7 +34,7 @@ def get_args():
         "--stdin", action="store_true", required=False, help="Expect signal coming from stdin"
     )
     parser.add_argument(
-        "--encode", default="complex64", required=False, help="Input stdin signal format. Available: complex64 and cu8 (AKA rtl_sdr) (default complex64)"
+        "--encode", default="complex64", required=False, help="Input stdin signal format. Available: complex64, cu8 (AKA rtl_sdr), uint8iq and float32iq (default complex64)"
     )
     parser.add_argument(
         "--tone", action="store_true", required=False, help="Generate test tone"
@@ -77,6 +77,8 @@ def scpi_responses (data) :
     global TONE_AMP
     global TONE_SAMPLING
     global DEPTH
+    global EXITING_PAUSE
+    global TONE_FREQ
     response = ''
     logger.debug("received: %s", repr(data))
     logger.debug("items in data: %i", len(data.split('\n')))
@@ -109,6 +111,20 @@ def scpi_responses (data) :
         elif command[0:6] == 'DEPTH ' :
             DEPTH = int(command[6:])
             logger.debug("command: DEPTH updating DEPTH to %i", DEPTH)
+            ignore_match = True
+
+        elif command[0:7] == 'RXFREQ ' :
+            # Let's piggyback on the Center frequency intended for the SDR receiver to drive our tone generator
+            RXFREQ = int(command[7:])
+            logger.debug("RXFREQ %i", RXFREQ)
+            # The SDR driver by default is going to place the Center frequency at 1GHz which not what we need
+            # Cap to a safe level
+            if RXFREQ > 10000 :
+                TONE_FREQ = 2600
+                logger.error("command: RXFREQ %i too high. Bringing it down to default %i", RXFREQ, TONE_FREQ)
+            else :
+                TONE_FREQ = RXFREQ
+                logger.debug("command: RXFREQ updating TONE_FREQ to %i", TONE_FREQ)
             ignore_match = True
 
         """
@@ -153,7 +169,7 @@ def scpi_responses (data) :
                     logger.info("command: 'RATES?' answering: %s", repr(response))
 
             case "DEPTHS?":
-                response = "1000,10000,20000,50000,100000,\n" # Additional coma required
+                response = "500,1000,2000,5000,10000,\n" # Additional coma required
                 logger.info("command: 'DEPTHS?' answering: %s", repr(response))
             case "RXGAIN 35":
                 logger.debug("command: %s matched", command)
@@ -164,8 +180,15 @@ def scpi_responses (data) :
             case "START":
                 logger.info("command: START Playing!")
                 PLAY = True
+                EXITING_PAUSE = True
             case "STOP":
                 logger.info("command: STOP Stoping!")
+                PLAY = False
+            case "SINGLE":
+                logger.info("command: SINGLE Stoping!")
+                PLAY = False
+            case "FORCE":
+                logger.info("command: FORCE Stoping!")
                 PLAY = False
 
             # Missing
@@ -196,6 +219,8 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
 
         logger.info("Connection received")
 
+        global EXITING_PAUSE
+
         # stdin section
         if args.stdin :
             logger.info("stdin active") # TODO check that we are getting something via stdin
@@ -205,8 +230,12 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                 # Has command PLAY been issued?
                 if PLAY == True :
 
-                    if ENCODE == 'complex64' :
+                    # TODO Implement EXITING_PAUSE like in --tone
 
+                    if ENCODE == 'complex64' :
+                        """
+                        complex64 : float32 + float32 IQ
+                        """
                         logger.info("Sending stdin complex64")
                         send_wave_header(self, DEPTH, TONE_SAMPLING)
 
@@ -215,50 +244,70 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
 
                             data = sys.stdin.buffer.read(8) # complex64 = 8 bytes
 
-                            # TODO handle partial data
-                            if len(data) == 8 :
-                                # logger.debug("stdin data: %s", data)
-                                # https://stackoverflow.com/questions/28995937/convert-python-byte-string-to-numpy-int
-                                sample_complex64 = np.frombuffer(data, dtype=np.complex64)
-                                if args.showprogress :
-                                    logger.info("stdin send: %s", hex_print_ascii(sample_complex64.tobytes(), sample_complex64))
-                                self.request.send( sample_complex64.tobytes() )
+                            # https://stackoverflow.com/questions/28995937/convert-python-byte-string-to-numpy-int
+                            sample_complex64 = np.frombuffer(data, dtype=np.complex64)
+                            if args.showprogress :
+                                logger.info("stdin send: %s", hex_print_ascii(sample_complex64.tobytes(), sample_complex64))
+                            self.request.send( sample_complex64.tobytes() )
 
-                                block_position = block_position +1
+                            block_position = block_position +1
 
                         # A block is completed (DEPTH)
                         # Time to send another waveform
                         logger.debug("send: Block BREAK at %i", block_position)
 
-                    elif ENCODE == 'cu8' :
-
-                        # rtl_sdr .cu8 Tests
-                        # https://github.com/merbanan/rtl_433_tests/tree/master/tests/directv
-
-                        logger.info("Sending stdin cu8")
+                    elif ENCODE == 'cu8' : # and uint8iq
+                        """
+                        rtl_sdr cu8 format seems to be: PCM unsigned integer 8 bits IQ (uint8iq)
+                        Zero power at x80, max power positive at xFF and max power negative at x00
+                        Dividing by 100 to get values to the typical -1/+1 Volts range.
+                        .cu8 Tests
+                        https://github.com/merbanan/rtl_433_tests/tree/master/tests/directv
+                        """
+                        logger.debug("Sending stdin cu8")
                         send_wave_header(self, DEPTH, TONE_SAMPLING)
 
                         block_position = 0
                         while block_position != DEPTH :
 
+                            # TODO Double check that I comes first and Q second
                             data = sys.stdin.buffer.read(2) # I one byte + Q one byte
 
-                            if len(data) == 2 :
-                                """
-                                .cu8 format seems to be 8 bits (256 values) with 0 at the center (value 127),
-                                everything above is positive and everything below 127 is negative.
-                                Dividing by 100 to get values to the typical -1/+1 Volts range.
-                                """
-                                real8 = np.array((data[0] -127) /100, dtype='float32')
-                                imag8 = np.array((data[1] -127) /100, dtype='float32')
-                                # https://stackoverflow.com/questions/2598734/numpy-creating-a-complex-array-from-2-real-ones
-                                sample_complex64 = np.array(real8 + 1j*imag8, dtype='complex64')
-                                # logger.debug("stdin data: %s", data)
-                                if args.showprogress :
-                                    logger.info("stdin send: %s", hex_print_ascii(sample_complex64.tobytes(), sample_complex64))
-                                self.request.send( sample_complex64.tobytes() )
+                            real32 = np.array((data[0] -127) /100, dtype='float32')
+                            imag32 = np.array((data[1] -127) /100, dtype='float32')
+                            # https://stackoverflow.com/questions/2598734/numpy-creating-a-complex-array-from-2-real-ones
+                            sample_complex64 = np.array(real32 + 1j*imag32, dtype='complex64')
+                            if args.showprogress :
+                                logger.info("stdin send: %s", hex_print_ascii(sample_complex64.tobytes(), sample_complex64))
+                            self.request.send( sample_complex64.tobytes() )
 
-                                block_position = block_position +1
+                            block_position = block_position +1
+
+                        # A block is completed (DEPTH)
+                        # Time to send another waveform
+                        logger.debug("send: Block BREAK at %i", block_position)
+
+                    elif ENCODE == 'float32iq' :
+
+                        logger.debug("Sending stdin float32iq")
+                        send_wave_header(self, DEPTH, TONE_SAMPLING)
+
+                        block_position = 0
+                        while block_position != DEPTH :
+
+                            data = sys.stdin.buffer.read(8) # float32 (4 bytes) x2 channels = 8 bytes
+
+                            # https://stackoverflow.com/questions/28995937/convert-python-byte-string-to-numpy-int
+                            data_real = data[0:4]
+                            data_imag = data[4:8]
+                            sample_float32_real = np.frombuffer(data_real, dtype=np.float32)
+                            sample_float32_imag = np.frombuffer(data_imag, dtype=np.float32)
+                            sample_complex64 = np.array(sample_float32_real + 1j*sample_float32_imag, dtype='complex64')
+                            if args.showprogress :
+                                logger.info("stdin send: %s", hex_print_ascii(sample_complex64.tobytes(), sample_complex64))
+                            self.request.send( sample_complex64.tobytes() )
+
+                            block_position = block_position +1
 
                         # A block is completed (DEPTH)
                         # Time to send another waveform
@@ -267,20 +316,21 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
         # Test tone generator section
         elif args.tone :
 
+            signal_position = 0
+
             # Stay into the handler to keep the stablished connection always open
             while True :
-                IN_PAUSE = True
-                # Has command PLAY been issued?
+
+                # Has PLAY command been issued?
                 if PLAY == True :
 
-                    if IN_PAUSE :
-                        logger.debug("PLAY existing pause")
-                        IN_PAUSE = False
-                        # Rending after pause to give a change to pick up new settings (in case there are any)
+                    if EXITING_PAUSE == True :
+                        logger.debug("PLAY: Exiting pause")
+                        EXITING_PAUSE = False
+                        # Rendering after pause to give a chance to pick up any change in settings (in case there are any)
                         signal_complex64 = render_tone(TONE_SAMPLING, TONE_FREQ, TONE_DURATION, TONE_AMP)
                         signal_length = len(signal_complex64)
                         logger.debug("len(signal_complex64) samples: %i", signal_length)
-                        signal_position = 0
 
                     logger.info("Sending tone")
                     send_wave_header(self, DEPTH, TONE_SAMPLING)
@@ -306,10 +356,6 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                     # A block is completed (DEPTH)
                     # Time to send another waveform
                     logger.debug("send: Block BREAK at %i", block_position)
-
-        # else :
-        #     logger.error("I don't know what to do!")
-        #     sys.exit(1)
 
 
 def send_wave_header (self, depth, tone_sampling) :
@@ -344,8 +390,18 @@ def render_tone (fs, f, t, tone_amp) :
     # fs = TONE_SAMPLING
     # f  = TONE_FREQ
     # t  = TONE_DURATION
-    # TODO: increase TONE_DURATION to make sure the periods of the signal end at zero to reduce signal noise
-    samples = np.arange(t * fs) / fs 
+   
+    # Do periods fit nicely in the signal length?
+    periods_in_duration = t / (1/f)
+    if periods_in_duration != int(periods_in_duration) :
+        # Round up the fraction number of periods
+        desired_periods = int(periods_in_duration) + bool(periods_in_duration%1)
+        # Extend the duration just enough to fit full periods
+        t_new = (desired_periods * t) / periods_in_duration
+        logger.debug("Duration time adjusted from %f to %f seconds to fit full periods",t,t_new)
+        t = t_new
+
+    samples = np.arange(t * fs) / fs
     signal = np.sin(2 * np.pi * f * samples)
 
     # Amplify
@@ -359,7 +415,7 @@ def render_tone (fs, f, t, tone_amp) :
     # From complex to complex 64 bits (32 bits real + 32 bits imaginary)
     signal_iq_complex64 = signal_iq.astype(np.complex64)
 
-    # BUG?: The first real is 3.8414194e-27-1j instead of 0 and that is an outlier in the sequence 
+    # BUG?: The first real is 3.8414194e-27-1j instead of 0 and that is an outlier in the sequence
     # TODO: Forcing the first real to be 0.1 at the begining of the period
     signal_iq_complex64[0] = np.array(0.1 + -1j*1, dtype='complex64')
 
@@ -411,7 +467,15 @@ def hex_print_ascii (bytes_to_convert, source) :
             result = result + ' '
     result = result[0:24] # TODO
 
-    return result + '| '+  number_padding_spaces(source.real) + number_padding_spaces(source.imag) +'|'+ from_number_to_point(source.real, source.imag) +'|'
+    # Print frequency based on zero crossings
+    ascii_point = from_number_to_point(source.real, source.imag)
+    # Did we just cross up?
+    if ascii_point[1] == '─' and ZERO_UP :
+        ascii_frequency = ' '+str(PERIOD_FREQUENCY)+' Hz'
+    else :
+        ascii_frequency = ''
+
+    return result + '| '+  number_padding_spaces(source.real) + number_padding_spaces(source.imag) +'│'+ ascii_point +'│'+ascii_frequency
 
 
 def number_padding_spaces (number) :
@@ -424,20 +488,32 @@ def from_number_to_point (source_real, source_imag) :
     """
     Plot both real and imaginary signals horizontally
     side by side using # symbol
+
+    https://www.lookuptables.com/text/extended-ascii-table
     """
     global ZERO_UP
     global ZERO_DOWN
+    global PERIOD
+    global PERIOD_RUNNER
+    global PERIOD_FREQUENCY
+
+    PERIOD_RUNNER = PERIOD_RUNNER + 1
+
     SCREEN = 31
 
-    # Find zero crossing for real part going positive
+    # Find zero crossing for real part going positive...
     fill = ' '
     if source_real >= 0 and ZERO_UP == False :
-        fill = '-'
+        fill = '─'
         ZERO_UP = True
         ZERO_DOWN = False
+        # Frequency meter
+        PERIOD = PERIOD +1
+        PERIOD_FREQUENCY = int(TONE_SAMPLING / PERIOD_RUNNER)
+        PERIOD_RUNNER = 0
     # and going negative
     if source_real <= 0 and ZERO_DOWN == False :
-        fill = '-'
+        fill = '─'
         ZERO_DOWN = True
         ZERO_UP = False
 
@@ -447,16 +523,34 @@ def from_number_to_point (source_real, source_imag) :
     # Reducing to fit in the screen
     BAND = TONE_AMP / 16
     pos = int(pos.item() / BAND)
-    real_string = fill* pos +'#'+ fill* (SCREEN-pos)
+    if pos > SCREEN :
+        # Saturation
+        pos = SCREEN
+        point = '╬'
+    elif pos < 0 :
+        pos = 0
+        point = '╬'
+    else :
+        point = '■'
+    real_string = fill*pos +point+ fill*(SCREEN-pos)
 
     pos = TONE_AMP + source_imag
     pos = int(pos.item() / BAND)
-    imag_string = fill* pos +'#'+ fill* (SCREEN-pos)
+    if pos > SCREEN :
+        # Saturation
+        pos = SCREEN
+        point = '╬'
+    elif pos < 0 :
+        pos = 0
+        point = '╬'
+    else :
+        point = '■'
+    imag_string = fill*pos +point+ fill*(SCREEN-pos)
 
     if fill == ' ' :
-        return real_string +'|'+ imag_string
+        return real_string +'│'+ imag_string
     else :
-        return real_string +'+'+ imag_string
+        return real_string +'┼'+ imag_string
 
 
 if __name__ == "__main__" :
@@ -479,9 +573,12 @@ if __name__ == "__main__" :
     if args.encode == 'complex64' and args.stdin :
         ENCODE = 'complex64'
         logger.info("Decoding stdin in format complex64 (I real float32 + Q imaginary float32)")
-    elif args.encode == 'cu8' and args.stdin :
+    elif ( args.encode == 'cu8' or args.encode == 'uint8iq' ) and args.stdin :
         ENCODE = 'cu8'
-        logger.info("Decoding stdin in format cu8 (I one byte + Q one byte)")
+        logger.info("Decoding stdin in format %s (8 bit unsigned integer IQ)", args.encode)
+    elif args.encode == 'float32iq' and args.stdin :
+        ENCODE = 'float32iq'
+        logger.info("Decoding stdin in format float32iq (32 bits + 32 bits float IQ)")
     elif args.stdin :
         ENCODE = 'complex64'
         logger.info("No encode for stdin specified. Decoding stdin in format %s", ENCODE)
@@ -491,10 +588,11 @@ if __name__ == "__main__" :
         TONE_SAMPLING = int(args.sampling)
         # TONE_AMP =    32767 # Aplitude [-32768, 32767]
         TONE_DURATION = float(args.toneduration) # Duration of wave in seconds (it will repeat afterwards)
-        TONE_AMP =    1
+        TONE_AMP = 1
         logger.info("Generating tone of %i Hz at %i sampling rate with a render length of %f seconds", TONE_FREQ, TONE_SAMPLING, TONE_DURATION)
     elif args.stdin :
-        TONE_AMP =    2
+        TONE_FREQ = 1 # To prevent division by zero below
+        TONE_AMP = 2
         TONE_SAMPLING = int(args.sampling)
         logger.info("Reading from stdin sampling at %i sampling rate and %i TONE_AMP in %s mode", TONE_SAMPLING, TONE_AMP, ENCODE)
     else :
@@ -503,16 +601,23 @@ if __name__ == "__main__" :
 
     if args.force :
         PLAY = True
+        EXITING_PAUSE = True
     else :
         PLAY = False
+        EXITING_PAUSE = False
 
-    # TONE_AMP =    1 # Aplitude [-32768, 32767]
-
-    DEPTH = 100000 # ngscopeclient seems to like 100K samples long waves
+    # Default wave length
+    # Other sizes offered via SCPI DEPTH and setting controled from UI
+    DEPTH = 1000
 
     # Zero crossing detector signaling
     ZERO_UP = False
     ZERO_DOWN = False
+
+    # ASCII frequency meter
+    PERIOD = 0
+    PERIOD_RUNNER = TONE_SAMPLING / TONE_FREQ
+    PERIOD_FREQUENCY = 0
 
     # Ctrl+C handler
     signal.signal(signal.SIGINT, signal_handler)
