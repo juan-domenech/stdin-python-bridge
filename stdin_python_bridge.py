@@ -34,13 +34,13 @@ def get_args():
         "--stdin", action="store_true", required=False, help="Expect signal coming from stdin"
     )
     parser.add_argument(
-        "--encode", default="complex64", required=False, help="Input stdin signal format. Available: complex64, cu8 (AKA rtl_sdr), uint8iq and float32iq (default complex64)"
+        "--encode", default="float32iq", required=False, help="Input stdin signal format. Available: complex64, cu8 (AKA rtl_sdr), uint8iq and float32iq (default float32iq)"
     )
     parser.add_argument(
         "--tone", action="store_true", required=False, help="Generate test tone"
     )
     parser.add_argument(
-        "--tonefreq", default=2600, required=False, help="Test tone frequency in Hz (default 2600 Hz)"
+        "--tonefreq", default=TONE_DEFAULT, required=False, help="Test tone frequency in Hz (default "+str(TONE_DEFAULT)+" Hz)"
     )
     parser.add_argument(
         "--toneduration", default=10, required=False, help="Test tone duration in seconds (default 10 seconds)"
@@ -119,12 +119,8 @@ def scpi_responses (data) :
             logger.debug("RXFREQ %i", RXFREQ)
             # The SDR driver by default is going to place the Center frequency at 1GHz which not what we need
             # Cap to a safe level
-            if RXFREQ > 10000 :
-                TONE_FREQ = 2600
-                logger.error("command: RXFREQ %i too high. Bringing it down to default %i", RXFREQ, TONE_FREQ)
-            else :
-                TONE_FREQ = RXFREQ
-                logger.debug("command: RXFREQ updating TONE_FREQ to %i", TONE_FREQ)
+            TONE_FREQ = check_tone_freq (RXFREQ, TONE_SAMPLING)
+            logger.debug("command: RXFREQ updating TONE_FREQ to %i", TONE_FREQ)
             ignore_match = True
 
         """
@@ -197,6 +193,18 @@ def scpi_responses (data) :
                     logger.error("command: %s not matched!", command)
  
     return response
+
+
+def check_tone_freq (rxfreq, tone_sampling) :
+    """
+    Make sure tone frequency is not too high for our sampling rate
+    https://en.wikipedia.org/wiki/Nyquist_frequency
+    """
+    if rxfreq > (tone_sampling /2) :
+        logger.error("RXFREQ %i too high for sampling %i. Bringing it down to default %i Hz", rxfreq, tone_sampling, TONE_DEFAULT)
+        return TONE_DEFAULT
+    else :
+        return rxfreq
 
 
 def clean_array (array_to_clean) :
@@ -331,8 +339,9 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                         signal_complex64 = render_tone(TONE_SAMPLING, TONE_FREQ, TONE_DURATION, TONE_AMP)
                         signal_length = len(signal_complex64)
                         logger.debug("len(signal_complex64) samples: %i", signal_length)
+                        logger.info("Sending tone")
 
-                    logger.info("Sending tone")
+                    print(".", end="",flush=True)
                     send_wave_header(self, DEPTH, TONE_SAMPLING)
 
                     block_position = 0
@@ -390,7 +399,7 @@ def render_tone (fs, f, t, tone_amp) :
     # fs = TONE_SAMPLING
     # f  = TONE_FREQ
     # t  = TONE_DURATION
-   
+
     # Do periods fit nicely in the signal length?
     periods_in_duration = t / (1/f)
     if periods_in_duration != int(periods_in_duration) :
@@ -555,6 +564,8 @@ def from_number_to_point (source_real, source_imag) :
 
 if __name__ == "__main__" :
 
+    TONE_DEFAULT = 2600
+
     args = get_args()
 
     logger = logging.getLogger(__name__)
@@ -570,28 +581,29 @@ if __name__ == "__main__" :
         logger.error("Fatal: --stdin and --tone at the same time are not allowed.")
         sys.exit(1)
 
-    if args.encode == 'complex64' and args.stdin :
-        ENCODE = 'complex64'
-        logger.info("Decoding stdin in format complex64 (I real float32 + Q imaginary float32)")
-    elif ( args.encode == 'cu8' or args.encode == 'uint8iq' ) and args.stdin :
-        ENCODE = 'cu8'
-        logger.info("Decoding stdin in format %s (8 bit unsigned integer IQ)", args.encode)
-    elif args.encode == 'float32iq' and args.stdin :
-        ENCODE = 'float32iq'
-        logger.info("Decoding stdin in format float32iq (32 bits + 32 bits float IQ)")
-    elif args.stdin :
-        ENCODE = 'complex64'
-        logger.info("No encode for stdin specified. Decoding stdin in format %s", ENCODE)
+    if args.stdin :
+        if args.encode == 'complex64' :
+            ENCODE = 'complex64'
+            logger.info("Decoding stdin in format complex64 (I real float32 + Q imaginary float32)")
+        elif args.encode == 'cu8' or args.encode == 'uint8iq' :
+            ENCODE = 'cu8'
+            logger.info("Decoding stdin in format %s (8 bit unsigned integer IQ)", args.encode)
+        elif args.encode == 'float32iq' :
+            ENCODE = 'float32iq'
+            logger.info("Decoding stdin in format float32iq (32 bits + 32 bits float IQ)")
+        elif args.encode :
+            logger.error("Unknown encode %s", args.encode)
+            sys.exit(1)
 
     if args.tone :
-        TONE_FREQ = int(args.tonefreq)
         TONE_SAMPLING = int(args.sampling)
         # TONE_AMP =    32767 # Aplitude [-32768, 32767]
         TONE_DURATION = float(args.toneduration) # Duration of wave in seconds (it will repeat afterwards)
         TONE_AMP = 1
+        TONE_FREQ = check_tone_freq (int(args.tonefreq), TONE_SAMPLING)
         logger.info("Generating tone of %i Hz at %i sampling rate with a render length of %f seconds", TONE_FREQ, TONE_SAMPLING, TONE_DURATION)
     elif args.stdin :
-        TONE_FREQ = 1 # To prevent division by zero below
+        TONE_FREQ = 1 # To prevent division by zero initialising PERIOD_RUNNER
         TONE_AMP = 2
         TONE_SAMPLING = int(args.sampling)
         logger.info("Reading from stdin sampling at %i sampling rate and %i TONE_AMP in %s mode", TONE_SAMPLING, TONE_AMP, ENCODE)
