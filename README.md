@@ -4,15 +4,15 @@ TCP/IP server to share waveforms coming from stdin into SDR UHD bridge to be rea
 
 This bridge emulates a [scopehal-uhd-bridge](https://github.com/ngscopeclient/scopehal-uhd-bridge) using SCPI instrumentation commands (port 5025) and a Twinlan TCP socket (port 5026).
 
-## Test tone mode
+## --tone mode
 
-To test our setup. The bridge generates a tone (single frequency) that is sent to ngscopeclient. The tone frequency is adjustable. The sample frequency and amplitude are controled from the ngscopeclient UI.
+Intended to test our setup. The bridge generates a tone (single frequency) that is sent to ngscopeclient. The tone frequency is adjustable. The sampling frequency and amplitude are controled from the ngscopeclient UI.
 
 First start the bridge by:
 ```
 python3 stdin_python_bridge.py --tone
 ```
-And then select SDR instrument in ngscopeclient:
+And then select SDR instrument in **ngscopeclient**:
 
 Add -> SDR -> Connect... -> Transport: twinlan -> `localhost:5025:5026`
 
@@ -22,16 +22,21 @@ And then click on: Play ▶️
 
 ![stdin-python-bridge-sdr-uhd-ngscopeclient-1.png](/images/stdin-python-bridge-sdr-uhd-ngscopeclient-1.png)
 
-## stdin mode
+## --stdin mode
 
-In this mode we can cat files or streams to **stdin-python-bridge** to be read by **ngscopeclient**.
+In this mode we can pipe files or streams to **stdin-python-bridge** to be read by **ngscopeclient**.
 
 ```
 cat YOUR_FILE | python3 stdin_python_bridge.py --stdin 
 ```
-The default signal encoding is `complex64` (IQ 32 bits + 32 bits) but `cu8` (IQ 8 bits + 8 bits) can also be used. 
+
+Available encode formats:
+
+### --encode cu8 (or uint8iq)
+Two channels (8 bits + 8 bits) unsigned intenger expected to be in IQ signal format.
 
 `cu8` is common in [rtl_sdr](https://pysdr.org/content/rtlsdr.html).
+
 This is a test file from **rtl_433** of a [DirecTV remote capture of a ~50 KHz signal](https://github.com/merbanan/rtl_433_tests/blob/master/tests/directv/01/g001_433.92M_250k.cu8).
 
 Example:
@@ -39,7 +44,27 @@ Example:
 cat g001_433.92M_250k.cu8 | python3 stdin_python_bridge.py --stdin --sampling 250000 --encode cu8
 ```
 
+### --encode float32iq
+Two channels (float32 + float32) expected to be in IQ signal format.
+
+(this is the default)
+
+Example to read from MacOS microphone using SoX:
+```
+sox -V6 -t coreaudio "MacBook Pro Microphone" -r48000 -efloating-point -c2 -t raw - | python3 stdin_python_bridge.py --stdin --encode float32iq --sampling 48000
+```
+
+### --encode complex64
+Two channels (float32 + float32) expected to be in IQ [complex signal format](https://pysdr.org/content/iq_files.html).
+
+
 ## Optional
+
+### --sampling
+Specify the expected sampling rate of the source signal in samples/second.
+
+### --tonefreq
+Frequency of the test tone in Hz.
 
 ### --loglevel debug
 
