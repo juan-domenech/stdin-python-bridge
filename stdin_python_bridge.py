@@ -28,22 +28,22 @@ def get_args():
     """ Get CLI arguments """
     parser = argparse.ArgumentParser(description="stdin_python_bridge.py")
     parser.add_argument(
-        "--sampling", default=44100, required=False, help="Sampling frequency (default 44100 samples per second )"
-    )
-    parser.add_argument(
-        "--stdin", action="store_true", required=False, help="Expect signal coming from stdin"
-    )
-    parser.add_argument(
-        "--encode", default="float32iq", required=False, help="Input stdin signal format. Available: complex64, cu8 (AKA rtl_sdr), uint8iq and float32iq (default float32iq)"
+        "--stdin", action="store_true", required=False, help="Read from Standard Input (stdin)"
     )
     parser.add_argument(
         "--tone", action="store_true", required=False, help="Generate test tone"
     )
     parser.add_argument(
+        "--samplerate", default=48000, required=False, help="Sampling frequency (default 48000 samples per second)"
+    )
+    parser.add_argument(
+        "--encode", default="float32iq", required=False, help="Input stdin signal format. Available: complex64, cu8 (AKA rtl_sdr), uint8iq and float32iq (default float32iq)"
+    )
+    parser.add_argument(
         "--tonefreq", default=TONE_DEFAULT, required=False, help="Test tone frequency in Hz (default "+str(TONE_DEFAULT)+" Hz)"
     )
     parser.add_argument(
-        "--toneduration", default=10, required=False, help="Test tone duration in seconds (default 10 seconds)"
+        "--toneduration", default=10, required=False, help="Test tone render duration in seconds. It repeats afterwards (default 10 seconds)"
     )
     parser.add_argument(
         "--showprogress", action="store_true", required=False, help="Show complex64 in Hex + complex64 in Number and Waveform in ASCII"
@@ -75,7 +75,7 @@ class SCPI_Handler (socketserver.BaseRequestHandler) :
 def scpi_responses (data) :
     global PLAY
     global TONE_AMP
-    global TONE_SAMPLING
+    global SAMPLE_RATE
     global DEPTH
     global EXITING_PAUSE
     global TONE_FREQ
@@ -96,21 +96,26 @@ def scpi_responses (data) :
 
         elif command[0:5] == 'RATE ' :
             if args.tone :
-                TONE_SAMPLING = int(command[5:])
-                logger.debug("command: RATE updating TONE_SAMPLING to %i", TONE_SAMPLING)
+                SAMPLE_RATE = int(command[5:])
+                logger.debug("command: RATE updating SAMPLE_RATE to %i", SAMPLE_RATE)
                 ignore_match = True
             elif args.stdin :
                 # Check 'RATES?' command below
                 proposed_sampling = int(command[5:])
-                if proposed_sampling == TONE_SAMPLING :
-                    logger.info("stdin: command: proposed_sampling %i coincides with TONE_SAMPLING. Nothing to do.", proposed_sampling)
+                if proposed_sampling == SAMPLE_RATE :
+                    logger.info("stdin: command: proposed_sampling %i coincides with SAMPLE_RATE. Nothing to do.", proposed_sampling)
                 else :
                     logger.warning("stdin: command: %s can not be execute with stdin. Ignoring.", command)
                 ignore_match = True
 
         elif command[0:6] == 'DEPTH ' :
             DEPTH = int(command[6:])
-            logger.debug("command: DEPTH updating DEPTH to %i", DEPTH)
+            if DEPTH == 100000 :
+                # For some reason ngscopeclient first asks for 10K ignoring the available options
+                logger.error("command: DEPTH %i too big. Bringing it down to 2000", DEPTH) # TODO Get highest value from a list of available values
+                DEPTH = 2000
+            else :
+                logger.debug("command: DEPTH updating DEPTH to %i", DEPTH)
             ignore_match = True
 
         elif command[0:7] == 'RXFREQ ' :
@@ -119,7 +124,7 @@ def scpi_responses (data) :
             logger.debug("RXFREQ %i", RXFREQ)
             # The SDR driver by default is going to place the Center frequency at 1GHz which not what we need
             # Cap to a safe level
-            TONE_FREQ = check_tone_freq (RXFREQ, TONE_SAMPLING)
+            TONE_FREQ = check_tone_freq (RXFREQ, SAMPLE_RATE)
             logger.debug("command: RXFREQ updating TONE_FREQ to %i", TONE_FREQ)
             ignore_match = True
 
@@ -153,19 +158,20 @@ def scpi_responses (data) :
                 Rate  1000000000 =     1 MS/s
                 Rate 10000000000 = 100000 S/s
                 Rate 20000000000 =  50000 S/s
+                Rate 20833333333 =  48000 S/s
                 Rate 22675736961 =  44100 S/s
                 """
                 # When generating a tone we can adjust to almost any sampling frequency proposed by ngscopeclient
                 if args.tone :
-                    response = "22675736961,20000000000,10000000000,\n" # Additional coma required
+                    response = "22675736961,20833333333,20000000000,10000000000,\n" # Additional coma required
                     logger.info("command: 'RATES?' answering: %s", repr(response))
-                # But when reading from stdin we have only one: the TONE_SAMPLING provided by the user
+                # But when reading from stdin we have only one: the SAMPLE_RATE provided by the user
                 elif args.stdin :
-                    response = str( int(1000000000000000/TONE_SAMPLING) )+",\n" # Additional coma required
+                    response = str( int(1000000000000000/SAMPLE_RATE) )+",\n" # Additional coma required
                     logger.info("command: 'RATES?' answering: %s", repr(response))
 
             case "DEPTHS?":
-                response = "500,1000,2000,5000,10000,\n" # Additional coma required
+                response = "500,1000,2000,5000,10000,\n" # Additional coma required # TODO use a global array
                 logger.info("command: 'DEPTHS?' answering: %s", repr(response))
             case "RXGAIN 35":
                 logger.debug("command: %s matched", command)
@@ -195,13 +201,13 @@ def scpi_responses (data) :
     return response
 
 
-def check_tone_freq (rxfreq, tone_sampling) :
+def check_tone_freq (rxfreq, sample_rate) :
     """
     Make sure tone frequency is not too high for our sampling rate
     https://en.wikipedia.org/wiki/Nyquist_frequency
     """
-    if rxfreq > (tone_sampling /2) :
-        logger.error("RXFREQ %i too high for sampling %i. Bringing it down to default %i Hz", rxfreq, tone_sampling, TONE_DEFAULT)
+    if rxfreq > (sample_rate /2) :
+        logger.error("RXFREQ %i too high for sampling %i. Bringing it down to default %i Hz", rxfreq, sample_rate, TONE_DEFAULT)
         return TONE_DEFAULT
     else :
         return rxfreq
@@ -245,7 +251,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                         complex64 : float32 + float32 IQ
                         """
                         logger.info("Sending stdin complex64")
-                        send_wave_header(self, DEPTH, TONE_SAMPLING)
+                        send_wave_header(self, DEPTH, SAMPLE_RATE)
 
                         block_position = 0
                         while block_position != DEPTH :
@@ -273,7 +279,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                         https://github.com/merbanan/rtl_433_tests/tree/master/tests/directv
                         """
                         logger.debug("Sending stdin cu8")
-                        send_wave_header(self, DEPTH, TONE_SAMPLING)
+                        send_wave_header(self, DEPTH, SAMPLE_RATE)
 
                         block_position = 0
                         while block_position != DEPTH :
@@ -298,7 +304,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                     elif ENCODE == 'float32iq' :
 
                         logger.debug("Sending stdin float32iq")
-                        send_wave_header(self, DEPTH, TONE_SAMPLING)
+                        send_wave_header(self, DEPTH, SAMPLE_RATE)
 
                         block_position = 0
                         while block_position != DEPTH :
@@ -336,21 +342,22 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                         logger.debug("PLAY: Exiting pause")
                         EXITING_PAUSE = False
                         # Rendering after pause to give a chance to pick up any change in settings (in case there are any)
-                        signal_complex64 = render_tone(TONE_SAMPLING, TONE_FREQ, TONE_DURATION, TONE_AMP)
+                        signal_complex64 = render_tone(SAMPLE_RATE, TONE_FREQ, TONE_DURATION, TONE_AMP)
                         signal_length = len(signal_complex64)
                         logger.debug("len(signal_complex64) samples: %i", signal_length)
                         logger.info("Sending tone")
-
-                    print(".", end="",flush=True)
-                    send_wave_header(self, DEPTH, TONE_SAMPLING)
 
                     block_position = 0
                     while block_position != DEPTH :
 
                         sample = signal_complex64[signal_position]
                         data_to_send = sample.tobytes()
+
                         if args.showprogress :
                             logger.info("send: %s", hex_print_ascii(data_to_send, sample))
+                        elif signal_position == 0 :
+                            print(".", end="",flush=True)
+
                         self.request.send(data_to_send)
                         block_position = block_position +1
 
@@ -367,7 +374,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                     logger.debug("send: Block BREAK at %i", block_position)
 
 
-def send_wave_header (self, depth, tone_sampling) :
+def send_wave_header (self, depth, sample_rate) :
     """
     https://github.com/ngscopeclient/scopehal-uhd-bridge/blob/main/src/uhdbridge/WaveformServerThread.cpp#L140-L148
     //Send the data out to the client
@@ -384,8 +391,8 @@ def send_wave_header (self, depth, tone_sampling) :
     logger.debug("send: DEPTH:\t%s", hex_print(data_to_send))
     self.request.send(data_to_send)
 
-    data_to_send = np.int64(TONE_SAMPLING).tobytes()
-    logger.debug("send: TONE_SAMPLING:\t%s", hex_print(data_to_send))
+    data_to_send = np.int64(SAMPLE_RATE).tobytes()
+    logger.debug("send: SAMPLE_RATE:\t%s", hex_print(data_to_send))
     self.request.send(data_to_send)
 
 
@@ -396,7 +403,7 @@ def render_tone (fs, f, t, tone_amp) :
     """
     logger.info("Rendering tone")
     # https://stackoverflow.com/questions/48043004/how-do-i-generate-a-sine-wave-using-python
-    # fs = TONE_SAMPLING
+    # fs = SAMPLE_RATE
     # f  = TONE_FREQ
     # t  = TONE_DURATION
 
@@ -518,9 +525,9 @@ def from_number_to_point (source_real, source_imag) :
         ZERO_DOWN = False
         # Frequency meter
         PERIOD = PERIOD +1
-        PERIOD_FREQUENCY = int(TONE_SAMPLING / PERIOD_RUNNER)
+        PERIOD_FREQUENCY = int(SAMPLE_RATE / PERIOD_RUNNER)
         PERIOD_RUNNER = 0
-    # and going negative
+    # ...and going negative
     if source_real <= 0 and ZERO_DOWN == False :
         fill = '─'
         ZERO_DOWN = True
@@ -596,17 +603,17 @@ if __name__ == "__main__" :
             sys.exit(1)
 
     if args.tone :
-        TONE_SAMPLING = int(args.sampling)
+        SAMPLE_RATE = int(args.samplerate)
         # TONE_AMP =    32767 # Aplitude [-32768, 32767]
         TONE_DURATION = float(args.toneduration) # Duration of wave in seconds (it will repeat afterwards)
         TONE_AMP = 1
-        TONE_FREQ = check_tone_freq (int(args.tonefreq), TONE_SAMPLING)
-        logger.info("Generating tone of %i Hz at %i sampling rate with a render length of %f seconds", TONE_FREQ, TONE_SAMPLING, TONE_DURATION)
+        TONE_FREQ = check_tone_freq (int(args.tonefreq), SAMPLE_RATE)
+        logger.info("Generating tone of %i Hz at %i sampling rate with a render length of %f seconds", TONE_FREQ, SAMPLE_RATE, TONE_DURATION)
     elif args.stdin :
         TONE_FREQ = 1 # To prevent division by zero initialising PERIOD_RUNNER
         TONE_AMP = 2
-        TONE_SAMPLING = int(args.sampling)
-        logger.info("Reading from stdin sampling at %i sampling rate and %i TONE_AMP in %s mode", TONE_SAMPLING, TONE_AMP, ENCODE)
+        SAMPLE_RATE = int(args.samplerate)
+        logger.info("Reading from stdin sampling at %i sampling rate and %i TONE_AMP in %s mode", SAMPLE_RATE, TONE_AMP, ENCODE)
     else :
         logger.error("Missing mode: --stdin or --tone")
         sys.exit(1)
@@ -618,7 +625,7 @@ if __name__ == "__main__" :
         PLAY = False
         EXITING_PAUSE = False
 
-    # Default wave length
+    # Default waveform length
     # Other sizes offered via SCPI DEPTH and setting controled from UI
     DEPTH = 1000
 
@@ -628,7 +635,7 @@ if __name__ == "__main__" :
 
     # ASCII frequency meter
     PERIOD = 0
-    PERIOD_RUNNER = TONE_SAMPLING / TONE_FREQ
+    PERIOD_RUNNER = SAMPLE_RATE / TONE_FREQ
     PERIOD_FREQUENCY = 0
 
     # Ctrl+C handler
