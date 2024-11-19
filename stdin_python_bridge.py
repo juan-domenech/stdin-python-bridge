@@ -112,7 +112,7 @@ def scpi_responses (data) :
             DEPTH = int(command[6:])
             if DEPTH == 100000 :
                 # For some reason ngscopeclient first asks for 10K ignoring the available options
-                logger.error("command: DEPTH %i too big. Bringing it down to 2000", DEPTH) # TODO Get highest value from a list of available values
+                logger.error("command: DEPTH %i too big. Bringing it down to 2000.", DEPTH) # TODO Get highest value from a list of available values
                 DEPTH = 2000
             else :
                 logger.debug("command: DEPTH updating DEPTH to %i", DEPTH)
@@ -346,6 +346,8 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                         signal_length = len(signal_complex64)
                         logger.debug("len(signal_complex64) samples: %i", signal_length)
                         logger.info("Sending tone")
+
+                    send_wave_header(self, DEPTH, SAMPLE_RATE)
 
                     block_position = 0
                     while block_position != DEPTH :
