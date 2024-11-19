@@ -52,19 +52,25 @@ Two channels (float32 + float32) expected to be in IQ signal format.
 #### Examples with SoX
 SoX manual page: https://man.cx/sox(1)
 
-Read a WAV file to create a 2 channels pipe with I and Q components:
+Read a WAV file to create a 2 channels pipe with I and Q components (MacOS):
 ```
 sox -V6 "|sox 1001.float32.mono.wav -p" "|sox 1001.float32.mono.wav -p hilbert -n 511" -r48000 -c2 -efloating-point -t raw - --combine merge | python3 stdin_python_bridge.py --stdin --encode float32iq --samplerate 48000
 ```
 
-Read from microphone to create a 2 channels pipe with I and Q components:
+Read from microphone to create a 2 channels pipe with I and Q components (MacOS):
 ```
 sox -V6 "|sox -v10 -t coreaudio 'MacBook Pro Microphone' -r48000 -c1 -p" "|sox -v10 -t coreaudio 'MacBook Pro Microphone' -r48000 -c1 -p hilbert -n 511" -r48000 -c2 -efloating-point -t raw - --combine merge | python3 stdin_python_bridge.py --stdin --encode float32iq --samplerate 48000
+```
+
+Read from line-in to create a 2 channels pipe expecting the source to be I/Q already (PC Ubuntu):
+```
+sox -V6 -48000 -b32 -c2 -t alsa -D hw:CARD=PCH,DEV=0 -b32 -efloating-point -t raw - | python3 stdin_python_bridge.py --stdin --encode float32iq --samplerate 48000 
 ```
 
 ### --encode complex64
 Two channels (float32 + float32) expected to be in IQ [complex signal format](https://pysdr.org/content/iq_files.html).
 
+This is the internal format of this script and the way the samples are sent over the wire.
 
 ## Optional
 
@@ -79,7 +85,7 @@ Frequency of the test tone in Hz.
 ### --showprogress
 (Impacts performance)
 
-Show the complex64 item of the signal in Hexadecimal (like it goes through the wire), the real and imaginary component as float32 and the wave as ASCII.
+Show the complex64 item of the signal in Hexadecimal, the real and imaginary component as float32 and the wave as ASCII.
 ```
 INFO:	WAVE handle send: |cd cc cc 3d 00 00 80 bf|  0.10000000149011612                 -1.0 │─────────────────■──────────────┼■───────────────────────────────│
 INFO:	WAVE handle send: |bc e8 aa 3e f4 50 71 bf|   0.3338068723678589  -0.9426414966583252 │                     ■          │■                               │
