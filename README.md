@@ -41,7 +41,7 @@ This is a test file from **rtl_433** of a [DirecTV remote capture of a ~50 KHz s
 
 Example:
 ```
-cat g001_433.92M_250k.cu8 | python3 stdin_python_bridge.py --stdin --sampling 250000 --encode cu8
+cat g001_433.92M_250k.cu8 | python3 stdin_python_bridge.py --stdin --samplerate 250000 --encode cu8
 ```
 
 ### --encode float32iq
@@ -49,9 +49,17 @@ Two channels (float32 + float32) expected to be in IQ signal format.
 
 (this is the default)
 
-Example to read from MacOS microphone using SoX:
+#### Examples with SoX
+SoX manual page: https://man.cx/sox(1)
+
+Read a WAV file to create a 2 channels pipe with I and Q components:
 ```
-sox -V6 -t coreaudio "MacBook Pro Microphone" -r48000 -efloating-point -c2 -t raw - | python3 stdin_python_bridge.py --stdin --encode float32iq --sampling 48000
+sox -V6 "|sox 1001.float32.mono.wav -p" "|sox 1001.float32.mono.wav -p hilbert -n 511" -r48000 -c2 -efloating-point -t raw - --combine merge | python3 stdin_python_bridge.py --stdin --encode float32iq --samplerate 48000
+```
+
+Read from microphone to create a 2 channels pipe with I and Q components:
+```
+sox -V6 "|sox -v10 -t coreaudio 'MacBook Pro Microphone' -r48000 -c1 -p" "|sox -v10 -t coreaudio 'MacBook Pro Microphone' -r48000 -c1 -p hilbert -n 511" -r48000 -c2 -efloating-point -t raw - --combine merge | python3 stdin_python_bridge.py --stdin --encode float32iq --samplerate 48000
 ```
 
 ### --encode complex64
@@ -60,7 +68,7 @@ Two channels (float32 + float32) expected to be in IQ [complex signal format](ht
 
 ## Optional
 
-### --sampling
+### --samplerate
 Specify the expected sampling rate of the source signal in samples/second.
 
 ### --tonefreq
@@ -73,22 +81,25 @@ Frequency of the test tone in Hz.
 
 Show the complex64 item of the signal in Hexadecimal (like it goes through the wire), the real and imaginary component as float32 and the wave as ASCII.
 ```
-INFO:	WAVE handle send: |cd cc cc 3d 00 00 80 bf|  0.10000000149011612                 -1.0 |-----------------#--------------+#-------------------------------|
-INFO:	WAVE handle send: |15 5b b9 3e a3 a2 6e bf|   0.3620230257511139  -0.9321691393852234 |                     #          | #                              |
-INFO:	WAVE handle send: |70 c8 2c 3f 9d e5 3c bf|   0.6749334335327148  -0.7378786206245422 |                          #     |    #                           |
-INFO:	WAVE handle send: |af 72 65 3f a1 10 e3 be|   0.8962811827659607  -0.4434862434864044 |                              # |        #                       |
-INFO:	WAVE handle send: |57 fc 7e 3f d0 20 b6 bd|   0.9960379004478455 -0.08892977237701416 |                               #|              #                 |
-INFO:	WAVE handle send: |7f ee 75 3f 86 2d 8e 3e|   0.9606704115867615   0.2776910662651062 |                               #|                    #           |
-INFO:	WAVE handle send: |99 83 4b 3f c0 4c 1b 3f|   0.7949767708778381   0.6066398620605469 |                            #   |                         #      |
-INFO:	WAVE handle send: |c7 7c 05 3f 45 71 5a 3f|   0.5214352011680603    0.853290855884552 |                        #       |                             #  |
-INFO:	WAVE handle send: |15 68 35 3e 6b f3 7b 3f|  0.17715485394001007   0.9841830134391785 |                  #             |                               #|
-INFO:	WAVE handle send: |16 bf 43 be 76 47 7b 3f| -0.19115862250328064    0.981559157371521 |------------#-------------------+-------------------------------#|
-INFO:	WAVE handle send: |06 96 08 bf bb 84 58 3f|  -0.5335391759872437    0.845775306224823 |       #                        |                             #  |
-INFO:	WAVE handle send: |ba b4 4d bf 73 62 18 3f|  -0.8035389184951782   0.5952522158622742 |   #                            |                         #      |
-INFO:	WAVE handle send: |63 eb 76 bf e1 27 87 3e|  -0.9645292162895203    0.263976126909256 |#                               |                    #           |
-INFO:	WAVE handle send: |ae a2 7e bf 12 2c d3 bd|  -0.9946697950363159  -0.1031114012002945 |#                               |              #                 |
-INFO:	WAVE handle send: |a4 ce 63 bf 71 94 e9 be|  -0.8898718357086182  -0.4562106430530548 | #                              |        #                       |
-INFO:	WAVE handle send: |fe 12 2a bf e4 56 3f bf|   -0.664352297782898  -0.7474195957183838 |     #                          |    #                           |
-INFO:	WAVE handle send: |8a 89 b2 be 75 ee 6f bf| -0.34870558977127075  -0.9372323155403137 |          #                     | #                              |
-INFO:	WAVE handle send: |af 6c 69 3c 59 f9 7f bf| 0.014247103594243526  -0.9998984932899475 |----------------#---------------+#-------------------------------|
+INFO:	WAVE handle send: |cd cc cc 3d 00 00 80 bf|  0.10000000149011612                 -1.0 │─────────────────■──────────────┼■───────────────────────────────│
+INFO:	WAVE handle send: |bc e8 aa 3e f4 50 71 bf|   0.3338068723678589  -0.9426414966583252 │                     ■          │■                               │
+INFO:	WAVE handle send: |24 1b 21 3f 0a f3 46 bf|   0.6293203830718994  -0.7771459817886353 │                          ■     │   ■                            │
+INFO:	WAVE handle send: |a0 46 5a 3f 77 c2 05 bf|   0.8526401519775391  -0.5224985480308533 │                             ■  │       ■                        │
+INFO:	WAVE handle send: |e2 67 7a 3f cd e6 54 be|   0.9781476259231567  -0.2079116851091385 │                               ■│            ■                   │
+INFO:	WAVE handle send: |55 cf 7d 3f a8 a8 05 3e|   0.9914448857307434  0.13052618503570557 │                               ■│                  ■             │
+INFO:	WAVE handle send: |01 19 64 3f 71 71 e8 3e|   0.8910065293312073  0.45399048924446106 │                              ■ │                       ■        │
+INFO:	WAVE handle send: |01 38 30 3f 23 b2 39 3f|   0.6883545517921448   0.7253744006156921 │                           ■    │                           ■    │
+INFO:	WAVE handle send: |c9 3f d0 3e 1d de 69 3f|   0.4067366421222687   0.9135454297065735 │                      ■         │                              ■ │
+INFO:	WAVE handle send: |2a af a0 3d f9 35 7f 3f|  0.07845909893512726   0.9969173073768616 │                 ■              │                               ■│
+INFO:	WAVE handle send: |ee 83 84 be ea 46 77 3f|   -0.258819043636322   0.9659258127212524 │───────────■────────────────────┼───────────────────────────────■│
+INFO:	WAVE handle send: |00 00 11 bf ef f9 52 3f|          -0.56640625   0.8241261839866638 │      ■                         │                             ■  │
+INFO:	WAVE handle send: |bd 1b 4f bf 18 79 16 3f|    -0.80901700258255   0.5877852439880371 │   ■                            │                         ■      │
+INFO:	WAVE handle send: |36 75 75 bf 76 6a 91 3e|  -0.9588197469711304  0.28401535749435425 │■                               │                    ■           │
+INFO:	WAVE handle send: |2f a6 7f bf 3a 5e 56 bd|  -0.9986295104026794  -0.0523359552025795 │■                               │               ■                │
+INFO:	WAVE handle send: |5e 83 6c bf 15 ef c3 be|  -0.9238795042037964  -0.3826834261417389 │ ■                              │         ■                      │
+INFO:	WAVE handle send: |bd 3e 3e bf 25 4c 2b bf|  -0.7431448101997375  -0.6691306233406067 │    ■                           │     ■                          │
+INFO:	WAVE handle send: |27 4e f4 be 29 fa 60 bf|  -0.4771587550640106  -0.8788171410560608 │        ■                       │ ■                              │
+INFO:	WAVE handle send: |5b 30 20 be 25 d9 7c bf| -0.15643446147441864  -0.9876883625984192 │             ■                  │■                               │
+INFO:	WAVE handle send: |f3 9b 3a 3e 98 b6 7b bf|  0.18223552405834198  -0.9832549095153809 │──────────────────■─────────────┼■───────────────────────────────│ 
+
 ```
