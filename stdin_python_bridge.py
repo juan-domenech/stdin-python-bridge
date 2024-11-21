@@ -73,6 +73,10 @@ class SCPI_Handler (socketserver.BaseRequestHandler) :
 
 
 def scpi_responses (data) :
+    """
+    SCPI commands manager
+    https://en.wikipedia.org/wiki/Standard_Commands_for_Programmable_Instruments
+    """
     global PLAY
     global TONE_AMP
     global SAMPLE_RATE
@@ -112,7 +116,7 @@ def scpi_responses (data) :
             DEPTH = int(command[6:])
             if DEPTH == 100000 :
                 # For some reason ngscopeclient first asks for 10K ignoring the available options
-                logger.error("command: DEPTH %i too big. Bringing it down to 2000.", DEPTH) # TODO Get highest value from a list of available values
+                logger.error("command: DEPTH %i too big. Bringing it down to 2000.", DEPTH) # TODO Get lowest? value from a list of available values
                 DEPTH = 2000
             else :
                 logger.debug("command: DEPTH updating DEPTH to %i", DEPTH)
@@ -148,30 +152,15 @@ def scpi_responses (data) :
             case "REFCLK internal":
                 logger.debug("command: %s matched", command)
             case "RATES?":
-                """
-                ngscopeclient divides Femtosecond in a second (FS_PER_SECOND) by our rates
-                https://github.com/ngscopeclient/scopehal/blob/master/scopehal/UHDBridgeSDR.cpp#L306
-
-                1000000000000000 / Desired Samples/s = Rate
-                i.e:
-                Rate   100000000 =    10 MS/s
-                Rate  1000000000 =     1 MS/s
-                Rate 10000000000 = 100000 S/s
-                Rate 20000000000 =  50000 S/s
-                Rate 20833333333 =  48000 S/s
-                Rate 22675736961 =  44100 S/s
-                """
-                # When generating a tone we can adjust to almost any sampling frequency proposed by ngscopeclient
                 if args.tone :
-                    response = "22675736961,20833333333,20000000000,10000000000,\n" # Additional coma required
-                    logger.info("command: 'RATES?' answering: %s", repr(response))
-                # But when reading from stdin we have only one: the SAMPLE_RATE provided by the user
+                    # When generating a tone we can select from a number of sampling frequencies...
+                    response = generate_rates([44100,48000,96000,192000])+"\n"
                 elif args.stdin :
-                    response = str( int(1000000000000000/SAMPLE_RATE) )+",\n" # Additional coma required
-                    logger.info("command: 'RATES?' answering: %s", repr(response))
-
+                    # ...but when reading from stdin we have only one: the SAMPLE_RATE provided by the user
+                    response = femto_rate(SAMPLE_RATE)+",\n" # Last coma required
+                logger.info("command: 'RATES?' answering: %s", repr(response))
             case "DEPTHS?":
-                response = "500,1000,2000,5000,10000,\n" # Additional coma required # TODO use a global array
+                response = "500,1000,2000,5000,10000,\n" # Last coma required # TODO use a global array
                 logger.info("command: 'DEPTHS?' answering: %s", repr(response))
             case "RXGAIN 35":
                 logger.debug("command: %s matched", command)
@@ -199,6 +188,33 @@ def scpi_responses (data) :
                     logger.error("command: %s not matched!", command)
  
     return response
+
+
+def femto_rate (sample_rate) :
+    """
+    ngscopeclient divides Femtosecond in a second (FS_PER_SECOND) by our rates
+    https://github.com/ngscopeclient/scopehal/blob/master/scopehal/UHDBridgeSDR.cpp#L306
+
+    1000000000000000 / Desired Samples/s = Rate
+    i.e:
+    Rate   100000000 =    10 MS/s
+    Rate  1000000000 =     1 MS/s
+    Rate 10000000000 = 100000 S/s
+    Rate 20000000000 =  50000 S/s
+    Rate 20833333333 =  48000 S/s
+    Rate 22675736961 =  44100 S/s
+    """
+    return str( int(1000000000000000/sample_rate) )
+
+
+def generate_rates (sample_rates_available) :
+    """
+    Build string of available rates including the one provided by the user under args.samplerate
+    """
+    if int(args.samplerate) not in sample_rates_available :
+        sample_rates_available.append(int(args.samplerate))
+    sample_rates_available.sort()
+    return ''.join([femto_rate(rate)+',' for rate in sample_rates_available ]) # Last coma required
 
 
 def check_tone_freq (rxfreq, sample_rate) :
@@ -250,16 +266,19 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                         """
                         complex64 : float32 + float32 IQ
                         """
-                        logger.info("Sending stdin complex64")
+                        logger.debug("Sending stdin complex64")
                         send_wave_header(self, DEPTH, SAMPLE_RATE)
 
                         block_position = 0
                         while block_position != DEPTH :
 
                             data = sys.stdin.buffer.read(8) # complex64 = 8 bytes
-
                             # https://stackoverflow.com/questions/28995937/convert-python-byte-string-to-numpy-int
-                            sample_complex64 = np.frombuffer(data, dtype=np.complex64)
+                            try:
+                                sample_complex64 = np.frombuffer(data, dtype=np.complex64)
+                            except Exception as err:
+                                logger.error("complex64: %s", err)
+
                             if args.showprogress :
                                 logger.info("stdin send: %s", hex_print_ascii(sample_complex64.tobytes(), sample_complex64))
                             self.request.send( sample_complex64.tobytes() )
@@ -286,9 +305,12 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
 
                             # TODO Double check that I comes first and Q second
                             data = sys.stdin.buffer.read(2) # I one byte + Q one byte
+                            try:
+                                real32 = np.array((data[0] -127) /100, dtype='float32')
+                                imag32 = np.array((data[1] -127) /100, dtype='float32')
+                            except Exception as err:
+                                logger.error("cu8: %s", err)
 
-                            real32 = np.array((data[0] -127) /100, dtype='float32')
-                            imag32 = np.array((data[1] -127) /100, dtype='float32')
                             # https://stackoverflow.com/questions/2598734/numpy-creating-a-complex-array-from-2-real-ones
                             sample_complex64 = np.array(real32 + 1j*imag32, dtype='complex64')
                             if args.showprogress :
@@ -314,8 +336,12 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                             # https://stackoverflow.com/questions/28995937/convert-python-byte-string-to-numpy-int
                             data_real = data[0:4]
                             data_imag = data[4:8]
-                            sample_float32_real = np.frombuffer(data_real, dtype=np.float32)
-                            sample_float32_imag = np.frombuffer(data_imag, dtype=np.float32)
+                            try:
+                                sample_float32_real = np.frombuffer(data_real, dtype=np.float32)
+                                sample_float32_imag = np.frombuffer(data_imag, dtype=np.float32)
+                            except Exception as err:
+                                logger.error("float32iq: %s", err)
+
                             sample_complex64 = np.array(sample_float32_real + 1j*sample_float32_imag, dtype='complex64')
                             if args.showprogress :
                                 logger.info("stdin send: %s", hex_print_ascii(sample_complex64.tobytes(), sample_complex64))
