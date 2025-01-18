@@ -114,12 +114,8 @@ def scpi_responses (data) :
 
         elif command[0:6] == 'DEPTH ' :
             DEPTH = int(command[6:])
-            if DEPTH == 100000 :
-                # For some reason ngscopeclient first asks for 10K ignoring the available options
-                logger.error("command: DEPTH %i too big. Bringing it down to 2000.", DEPTH) # TODO Get lowest? value from a list of available values
-                DEPTH = 2000
-            else :
-                logger.debug("command: DEPTH updating DEPTH to %i", DEPTH)
+            # TODO Only accept DEPTH from available options
+            logger.debug("command: DEPTH updating DEPTH to %i", DEPTH)
             ignore_match = True
 
         elif command[0:7] == 'RXFREQ ' :
@@ -128,7 +124,7 @@ def scpi_responses (data) :
             logger.debug("RXFREQ %i", RXFREQ)
             # The SDR driver by default is going to place the Center frequency at 1GHz which not what we need
             # Cap to a safe level
-            TONE_FREQ = check_tone_freq (RXFREQ, SAMPLE_RATE)
+            TONE_FREQ = check_tone_freq(RXFREQ, SAMPLE_RATE)
             logger.debug("command: RXFREQ updating TONE_FREQ to %i", TONE_FREQ)
             ignore_match = True
 
@@ -160,7 +156,7 @@ def scpi_responses (data) :
                     response = femto_rate(SAMPLE_RATE)+",\n" # Last coma required
                 logger.info("command: 'RATES?' answering: %s", repr(response))
             case "DEPTHS?":
-                response = "500,1000,2000,5000,10000,\n" # Last coma required # TODO use a global array
+                response = "500,1000,2000,5000,10000,100000,200000,\n" # Last coma required # TODO use a global array
                 logger.info("command: 'DEPTHS?' answering: %s", repr(response))
             case "RXGAIN 35":
                 logger.debug("command: %s matched", command)
@@ -222,11 +218,13 @@ def check_tone_freq (rxfreq, sample_rate) :
     Make sure tone frequency is not too high for our sampling rate
     https://en.wikipedia.org/wiki/Nyquist_frequency
     """
-    if rxfreq > (sample_rate /2) :
-        logger.error("RXFREQ %i too high for sampling %i. Bringing it down to default %i Hz", rxfreq, sample_rate, TONE_DEFAULT)
-        return TONE_DEFAULT
-    else :
-        return rxfreq
+
+    # Only needed when --tone
+    if args.tone and rxfreq > (sample_rate /2) :
+        logger.warning("RXFREQ %i too high for sampling at %i S/ps. Bringing it down to default %i Hz.", rxfreq, sample_rate, TONE_FREQ)
+        return TONE_FREQ
+
+    return rxfreq
 
 
 def clean_array (array_to_clean) :
@@ -249,6 +247,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
 
         logger.info("Connection received")
 
+        global PLAY
         global EXITING_PAUSE
 
         # stdin section
@@ -274,6 +273,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
 
                             data = sys.stdin.buffer.read(8) # complex64 = 8 bytes
                             # https://stackoverflow.com/questions/28995937/convert-python-byte-string-to-numpy-int
+                            # TODO implement like in cu8
                             try:
                                 sample_complex64 = np.frombuffer(data, dtype=np.complex64)
                             except Exception as err:
@@ -308,16 +308,25 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                             try:
                                 real32 = np.array((data[0] -127) /100, dtype='float32')
                                 imag32 = np.array((data[1] -127) /100, dtype='float32')
+
+                                # https://stackoverflow.com/questions/2598734/numpy-creating-a-complex-array-from-2-real-ones
+                                sample_complex64 = np.array(real32 + 1j*imag32, dtype='complex64')
+                                if args.showprogress :
+                                    logger.info("stdin send: %s", hex_print_ascii(sample_complex64.tobytes(), sample_complex64))
+                                self.request.send( sample_complex64.tobytes() )
+
+                                block_position = block_position +1
+
                             except Exception as err:
                                 logger.error("cu8: %s", err)
 
-                            # https://stackoverflow.com/questions/2598734/numpy-creating-a-complex-array-from-2-real-ones
-                            sample_complex64 = np.array(real32 + 1j*imag32, dtype='complex64')
-                            if args.showprogress :
-                                logger.info("stdin send: %s", hex_print_ascii(sample_complex64.tobytes(), sample_complex64))
-                            self.request.send( sample_complex64.tobytes() )
+                                logger.debug("cu8: Filling rest of the block with %i zeros", DEPTH - block_position)
+                                for item in range(DEPTH - block_position) :
+                                    self.request.send( np.array(0 + 1j*0, dtype='complex64') )
 
-                            block_position = block_position +1
+                                logger.warning("Broken pipe? Pausing!")
+                                block_position = DEPTH
+                                PLAY = False
 
                         # A block is completed (DEPTH)
                         # Time to send another waveform
@@ -336,6 +345,7 @@ class WAVE_Handler (socketserver.BaseRequestHandler) :
                             # https://stackoverflow.com/questions/28995937/convert-python-byte-string-to-numpy-int
                             data_real = data[0:4]
                             data_imag = data[4:8]
+                            # TODO implement like in cu8
                             try:
                                 sample_float32_real = np.frombuffer(data_real, dtype=np.float32)
                                 sample_float32_imag = np.frombuffer(data_imag, dtype=np.float32)
@@ -630,15 +640,20 @@ if __name__ == "__main__" :
             logger.error("Unknown encode %s", args.encode)
             sys.exit(1)
 
+    if args.tonefreq :
+        TONE_FREQ = int(args.tonefreq)
+        TONE_DEFAULT = TONE_FREQ
+    else :
+        TONE_FREQ = TONE_DEFAULT
+
     if args.tone :
         SAMPLE_RATE = int(args.samplerate)
         # TONE_AMP =    32767 # Aplitude [-32768, 32767]
         TONE_DURATION = float(args.toneduration) # Duration of wave in seconds (it will repeat afterwards)
         TONE_AMP = 1
-        TONE_FREQ = check_tone_freq (int(args.tonefreq), SAMPLE_RATE)
         logger.info("Generating tone of %i Hz at %i sampling rate with a render length of %f seconds", TONE_FREQ, SAMPLE_RATE, TONE_DURATION)
     elif args.stdin :
-        TONE_FREQ = 1 # To prevent division by zero initialising PERIOD_RUNNER
+        TONE_FREQ = 1 # To prevent division by zero initialising PERIOD_RUNNER # TODO Necessary with always TONE_FREQ present?
         TONE_AMP = 2
         SAMPLE_RATE = int(args.samplerate)
         logger.info("Reading from stdin sampling at %i sampling rate and %i TONE_AMP in %s mode", SAMPLE_RATE, TONE_AMP, ENCODE)
