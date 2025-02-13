@@ -4,6 +4,12 @@ TCP/IP server to share waveforms coming from stdin into SDR UHD bridge to be rea
 
 This bridge emulates a [scopehal-uhd-bridge](https://github.com/ngscopeclient/scopehal-uhd-bridge) using SCPI instrumentation commands (port 5025) and a Twinlan TCP socket (port 5026).
 
+▶️ [YouTube tutorial:](https://www.youtube.com/watch?v=sNBDqhYXUR8)
+
+[![ngscopeclient: Injecting audio via stdin and SDR UHD twinlan input](http://img.youtube.com/vi/sNBDqhYXUR8/0.jpg)](http://www.youtube.com/watch?v=sNBDqhYXUR8 "ngscopeclient: Injecting audio via stdin and SDR UHD twinlan input")
+
+# Instructions
+
 ## --tone mode
 
 Intended to test our setup. The bridge generates a tone (single frequency) that is sent to ngscopeclient. The tone frequency is adjustable. The sampling frequency and amplitude are controled from the ngscopeclient UI.
